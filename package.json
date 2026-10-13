@@ -1,3 +1,7 @@
 {
-    "type": "module"
+    "name": "gnome-mosaic",
+    "type": "module",
+    "dependencies": {
+        "typescript": "^7.0.2"
+    }
 }

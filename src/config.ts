@@ -43,9 +43,11 @@ export const DEFAULT_FLOAT_RULES: Array<FloatRule> = [
     {class: 'Solaar'},
     {class: 'Steam', title: '^((?!Steam).)*$'},
     {class: 'Steam', title: '^.*(Guard|Login).*'},
+    {class: 'steam', title: 'Sign in to Steam'},
     {class: 'TelegramDesktop', title: 'Media viewer'},
     {class: 'Zotero', title: 'Quick Format Citation'},
     {class: 'firefox', title: '^(?!.*Mozilla Firefox).*$'},
+    {class: 'org.mozilla.firefox', title: 'Picture-in-Picture'},
     {class: 'gnome-screenshot'},
     {class: 'ibus-.*'},
     {class: 'jetbrains-toolbox'},
@@ -63,6 +65,8 @@ export const DEFAULT_FLOAT_RULES: Array<FloatRule> = [
     {class: 'io.github.bugaevc.wl-clipboard'},
     {class: 'org.gnome.NautilusPreviewer'},
     {class: 'com.rastersoft.ding'},
+    {class: 'git-credential-manager'},
+    {class: 'xwaylandvideobridge'},
 ];
 
 export interface WindowRule {

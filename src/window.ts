@@ -32,6 +32,48 @@ interface X11Info {
     xid_: once_cell.OnceCell<string | null>;
 }
 
+const comm_cache = new WeakMap<Meta.Window, string | null>();
+
+// Read the process name for a window. A pid of 0 means "unknown" (Wayland
+// clients may not advertise one); the pid never changes, so cache either way.
+function process_comm(meta: Meta.Window): string | null {
+    if (comm_cache.has(meta)) return comm_cache.get(meta)!;
+
+    let comm: string | null = null;
+    const pid = meta.get_pid();
+    if (pid !== 0) {
+        const path = `/proc/${pid}/comm`;
+        if (utils.exists(path)) {
+            const result = utils.read_to_string(path);
+            if (result.kind === 1 && result.value.trim().length > 0) {
+                comm = result.value.trim();
+            }
+        }
+    }
+
+    comm_cache.set(meta, comm);
+    return comm;
+}
+
+export function fallback_identity(meta: Meta.Window): string | null {
+    const wm_class = meta.get_wm_class();
+    if (wm_class !== null && wm_class.trim().length > 0) return wm_class;
+
+    const instance = meta.get_wm_class_instance();
+    if (instance !== null && instance.trim().length > 0) return instance;
+
+    const app_id = (meta as any).get_gtk_application_id?.();
+    if (typeof app_id === 'string' && app_id.trim().length > 0) return app_id;
+
+    const comm = process_comm(meta);
+    if (comm !== null) return comm;
+
+    const title = meta.get_title();
+    if (title !== null && title.trim().length > 0) return title;
+
+    return null;
+}
+
 export class ShellWindow {
     entity: Entity;
     meta: Meta.Window;
@@ -50,6 +92,10 @@ export class ShellWindow {
 
     // True if this window is currently smart-gapped
     smart_gapped: boolean = false;
+
+    // Last observed WM class, used to ignore spurious
+    // notify::wm-class re-emissions (see wm_class_changed)
+    private last_wm_class: string | null = null;
 
     border: null | St.Bin = new St.Bin({
         style_class: 'gnome-mosaic-active-hint gnome-mosaic-border-normal',
@@ -90,6 +136,7 @@ export class ShellWindow {
 
         this.entity = entity;
         this.meta = window;
+        this.last_wm_class = window.get_wm_class();
 
         this.known_workspace = this.workspace_id();
 
@@ -208,7 +255,7 @@ export class ShellWindow {
     cmdline(): string | null {
         let pid = this.meta.get_pid(),
             out = null;
-        if (-1 === pid) return out;
+        if (0 === pid) return out;
 
         const path = '/proc/' + pid + '/cmdline';
         if (!utils.exists(path)) return out;
@@ -268,7 +315,7 @@ export class ShellWindow {
     }
 
     icon(_ext: Ext, size: number): any {
-        let icon = this.window_app.create_icon_texture(size);
+        let icon = this.window_app?.create_icon_texture(size) ?? null;
 
         if (!icon) {
             icon = new St.Icon({
@@ -333,13 +380,19 @@ export class ShellWindow {
         );
     }
 
+    identity(ext: Ext): string | null {
+        const id = fallback_identity(this.meta);
+        if (id !== null) return id;
+
+        const name = this.name(ext);
+        if (name !== 'unknown' && name.trim().length > 0) return name;
+
+        return null;
+    }
+
     is_tilable(ext: Ext): boolean {
         let tile_checks = () => {
-            let wm_class = this.meta.get_wm_class();
-
-            if (wm_class !== null && wm_class.trim().length === 0) {
-                wm_class = this.name(ext);
-            }
+            const wm_class = this.identity(ext);
 
             const role = this.meta.get_role();
 
@@ -371,7 +424,8 @@ export class ShellWindow {
                 this.meta.window_type == Meta.WindowType.NORMAL &&
                 // Transient windows are most likely dialogs
                 !this.is_transient() &&
-                // If a window lacks a class, it's probably a web browser dialog
+                // A window that could not be identified at all (no class,
+                // app id, process name or title) is left floating.
                 wm_class !== null
             );
         };
@@ -616,14 +670,13 @@ export class ShellWindow {
             do {
                 this.border_style_queued = false;
 
-                const margin = 6;
+                const borderWidth = ext.settings.active_hint_border_width();
                 const radii = await getBorderRadii(
                     this.meta.get_compositor_private() as Meta.WindowActor
                 );
                 const radii_values =
-                    radii?.map(v => `${v + margin}px`).join(' ') ||
+                    radii?.map(v => `${v + borderWidth}px`).join(' ') ||
                     '0px 0px 0px 0px';
-                const borderWidth = ext.settings.active_hint_border_width();
                 const colors: [string, string] = utils.get_accent_colors(
                     ext.settings
                 );
@@ -649,11 +702,24 @@ export class ShellWindow {
     }
 
     private wm_class_changed(ext: Ext) {
+        // Some applications (e.g. Firefox) periodically re-emit
+        // notify::wm-class without changing the value. Reacting to
+        // every emission detached and re-tiled the window — moving it
+        // on its own every ~30 seconds — and leaked signal
+        // connections. Only react to actual class changes.
+        const wm_class = this.meta.get_wm_class();
+        if (this.last_wm_class === wm_class) return;
+
+        this.last_wm_class = wm_class;
+        log.debug(`wm_class changed: ${wm_class}`);
+
         if (this.is_tilable(ext)) {
             ext.connect_window(this);
             if (!this.meta.minimized) {
                 ext.auto_tiler?.auto_tile(ext, this, ext.init);
             }
+        } else if (!this.meta.minimized) {
+            ext.auto_tiler?.detach_window(ext, this.entity);
         }
     }
 
